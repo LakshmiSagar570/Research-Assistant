@@ -7,6 +7,10 @@ Lambda-style event format Vercel's Python functions use under the
 hood. This file is the target referenced in vercel.json - it does not
 run locally; local dev still uses `uvicorn app.main:app --reload`.
 """
+
+# Fix this issue
+# from app.core.database import init_db  # noqa: F401
+# from app.core.database import async_session  # noqa: F401
 from mangum import Mangum
 from app.main import app
 

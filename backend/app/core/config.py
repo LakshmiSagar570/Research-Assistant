@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12  # 12 hours, convenient for demo sessions
 
     # arXiv
-    ARXIV_API_URL: str = "http://export.arxiv.org/api/query"
+    ARXIV_API_URL: str = "https://export.arxiv.org/api/query"
     ARXIV_TIMEOUT_SECONDS: float = 8.0
 
     # Exported files (generated review .docx) land here.

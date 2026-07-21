@@ -29,7 +29,7 @@ async def search_arxiv(query: str, max_results: int = 10) -> list[dict]:
     )
 
     try:
-        async with httpx.AsyncClient(timeout=settings.ARXIV_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=settings.ARXIV_TIMEOUT_SECONDS, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
