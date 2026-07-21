@@ -24,14 +24,14 @@ _engine_kwargs = {"echo": False, "future": True}
 _db_url = _normalize_database_url(settings.DATABASE_URL)
 
 if _db_url.startswith("postgresql+asyncpg://"):
-    # Supabase requires SSL; pool sizing kept small since serverless
-    # functions spin up many short-lived instances rather than one
-    # long-running process with a big pool.
-    _engine_kwargs["connect_args"] = {"ssl": "require"}
-    _engine_kwargs["pool_size"] = 5
-    _engine_kwargs["max_overflow"] = 2
+    # Supabase's pooler (PgBouncer, transaction mode) doesn't support
+    # prepared statements, which asyncpg uses by default - disable them
+    # via statement_cache_size=0. SSL required by Supabase. Pool kept
+    # minimal since each serverless invocation is a fresh process.
+    _engine_kwargs["connect_args"] = {"ssl": "require", "statement_cache_size": 0}
+    _engine_kwargs["pool_size"] = 1
+    _engine_kwargs["max_overflow"] = 0
     _engine_kwargs["pool_pre_ping"] = True
-
 engine = create_async_engine(_db_url, **_engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
