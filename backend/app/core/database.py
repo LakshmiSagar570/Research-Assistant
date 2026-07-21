@@ -23,23 +23,20 @@ def _normalize_database_url(url: str) -> str:
 
 _engine_kwargs = {"echo": False, "future": True}
 _db_url = _normalize_database_url(settings.DATABASE_URL)
-
+engine = create_async_engine(_db_url, **_engine_kwargs)
 if _db_url.startswith("postgresql+asyncpg://"):
-    # Supabase's pooler (PgBouncer, transaction mode) is incompatible with
-    # asyncpg's prepared-statement caching and connection reuse. NullPool
-    # avoids SQLAlchemy pooling entirely (PgBouncer already pools for us),
-    # and statement_cache_size=0 disables prepared statements on asyncpg's
-    # side - together these avoid DuplicatePreparedStatementError.
     _engine_kwargs["connect_args"] = {"ssl": "require", "statement_cache_size": 0}
     _engine_kwargs["poolclass"] = NullPool
 else:
     _engine_kwargs["pool_pre_ping"] = True
+
+engine = create_async_engine(_db_url, **_engine_kwargs)
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
 
 class Base(DeclarativeBase):
     pass

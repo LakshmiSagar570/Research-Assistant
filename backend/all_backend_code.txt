@@ -1,0 +1,1637 @@
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\api\index.py =====
+
+"""
+Vercel serverless entrypoint.
+
+Vercel's Python runtime expects a WSGI/ASGI-compatible handler at a
+known path. Mangum adapts our ASGI FastAPI app to the AWS
+Lambda-style event format Vercel's Python functions use under the
+hood. This file is the target referenced in vercel.json - it does not
+run locally; local dev still uses `uvicorn app.main:app --reload`.
+"""
+from mangum import Mangum
+from app.main import app
+
+# lifespan="auto" ensures FastAPI's startup event (which calls init_db() to
+# create tables) actually runs on cold start. Mangum defaults to "off" for
+# lifespan handling since not all serverless platforms support it the same
+# way; Vercel's Python runtime does, so we opt in explicitly rather than
+# rely on an implicit default that could silently skip table creation.
+handler = Mangum(app, lifespan="auto")
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\config.py =====
+
+"""
+Central configuration for the AI Research Assistant backend.
+
+All tunables live here so the rest of the codebase never hardcodes
+secrets, paths, or magic numbers.
+"""
+from pydantic_settings import BaseSettings
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent  # backend/app
+
+
+class Settings(BaseSettings):
+    APP_NAME: str = "AI Research Assistant"
+    ENV: str = "development"
+
+    # Local dev: SQLite (zero setup). Production: set DATABASE_URL to your
+    # Supabase Postgres connection string (asyncpg driver) via environment
+    # variable - never commit real prod credentials here.
+    DATABASE_URL: str = f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'app.db'}"
+
+    # JWT - MUST be overridden via environment variable in production.
+    # The default below is only safe for local/offline demo use.
+    JWT_SECRET: str = "change-this-secret-in-production-please"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12  # 12 hours, convenient for demo sessions
+
+    # arXiv
+    ARXIV_API_URL: str = "http://export.arxiv.org/api/query"
+    ARXIV_TIMEOUT_SECONDS: float = 8.0
+
+    # Exported files (generated review .docx) land here.
+    # NOTE: on Vercel serverless, only /tmp is writable - see EXPORTS_DIR below.
+    EXPORTS_DIR: Path = BASE_DIR / "data" / "exports"
+
+    # CORS - comma-separated in production via env var, e.g.:
+    # CORS_ORIGINS=https://your-app.vercel.app,https://your-app-git-main.vercel.app
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+    ]
+
+    # Whether to seed the demo@college.edu account on startup. Defaults to
+    # true for local dev convenience; MUST be false in production so no
+    # publicly-known credential exists on the live deployment.
+    SEED_DEMO_USER: bool = True
+
+    # Rate limiting (requests per window) for auth endpoints, to slow down
+    # credential-stuffing / brute-force attempts in production.
+    LOGIN_RATE_LIMIT: str = "10/minute"
+    REGISTER_RATE_LIMIT: str = "5/minute"
+
+    class Config:
+        env_file = ".env"
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENV.lower() == "production"
+
+
+settings = Settings()
+
+if settings.is_production and settings.JWT_SECRET == "change-this-secret-in-production-please":
+    raise RuntimeError(
+        "JWT_SECRET is still set to the insecure default while ENV=production. "
+        "Set a strong random JWT_SECRET environment variable before deploying."
+    )
+
+# On Vercel, only /tmp is writable at runtime; local filesystem elsewhere is
+# read-only. Detect the serverless environment and redirect exports there.
+if settings.is_production:
+    settings.EXPORTS_DIR = Path("/tmp/exports")
+
+settings.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+if not settings.is_production:
+    (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\database.py =====
+
+"""
+Async SQLAlchemy engine + session factory.
+
+Local dev uses SQLite via aiosqlite (zero setup). Production uses Supabase
+Postgres via asyncpg. Supabase gives you a connection string that starts
+with `postgresql://` - SQLAlchemy's async engine needs the driver spelled
+out (`postgresql+asyncpg://`), so we normalize that here rather than
+requiring you to hand-edit the URL Supabase gives you.
+"""
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase
+from app.core.config import settings
+from sqlalchemy.pool import NullPool
+
+
+def _normalize_database_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):  # some providers use this shorthand
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
+
+
+_engine_kwargs = {"echo": False, "future": True}
+_db_url = _normalize_database_url(settings.DATABASE_URL)
+
+if _db_url.startswith("postgresql+asyncpg://"):
+    # Supabase's pooler (PgBouncer, transaction mode) is incompatible with
+    # asyncpg's prepared-statement caching and connection reuse. NullPool
+    # avoids SQLAlchemy pooling entirely (PgBouncer already pools for us),
+    # and statement_cache_size=0 disables prepared statements on asyncpg's
+    # side - together these avoid DuplicatePreparedStatementError.
+    _engine_kwargs["connect_args"] = {"ssl": "require", "statement_cache_size": 0}
+    _engine_kwargs["poolclass"] = NullPool
+else:
+    _engine_kwargs["pool_pre_ping"] = True
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+async def get_db():
+    """FastAPI dependency yielding a scoped async session per request."""
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def init_db():
+    """Create all tables on startup. Fine for this project's scale; use Alembic migrations for larger schemas."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\deps.py =====
+
+"""
+Reusable FastAPI dependencies: current authenticated user, and
+role-gates for endpoints that require Faculty or Admin privileges.
+
+FR7 acceptance criteria: "Unauthorized actions are rejected; role
+permissions enforced server-side" - this module is where that
+enforcement actually happens, not just in the frontend UI.
+"""
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.core.security import decode_access_token
+from app.models.orm import User, UserRole
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+
+async def get_current_user(
+    token: str | None = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    credentials_error = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        raise credentials_error
+
+    payload = decode_access_token(token)
+    if not payload or "sub" not in payload:
+        raise credentials_error
+
+    result = await db.execute(select(User).where(User.id == payload["sub"]))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise credentials_error
+    return user
+
+
+def require_role(*allowed: UserRole):
+    """Dependency factory: require_role(UserRole.faculty, UserRole.admin)"""
+
+    async def _check(user: User = Depends(get_current_user)) -> User:
+        if user.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of roles: {[r.value for r in allowed]}",
+            )
+        return user
+
+    return _check
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\limiter.py =====
+
+"""
+Shared slowapi Limiter instance.
+
+Kept in its own module (not main.py) so routers can import it without
+creating a circular import (main.py imports routers, routers would
+otherwise need to import back from main.py).
+"""
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\security.py =====
+
+"""
+Password hashing and JWT issuance/verification.
+
+Uses the bcrypt library directly rather than through passlib's
+CryptContext wrapper. passlib's bcrypt backend reads bcrypt's internal
+version string to detect the installed backend, and this detection
+breaks against bcrypt>=4.1 (a passlib bug, unfixed upstream) -
+producing hashes that passlib then can't verify against, with a
+confusing "hash could not be identified" error. Calling bcrypt
+directly sidesteps that entirely and is simpler besides.
+"""
+from datetime import datetime, timedelta, timezone
+import bcrypt
+from jose import jwt, JWTError
+
+from app.core.config import settings
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def create_access_token(subject: str, role: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": subject, "role": role, "exp": expire}
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict | None:
+    try:
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\core\__init__.py =====
+
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\models\orm.py =====
+
+"""
+ORM models mirroring the SRS Database Design section:
+  Papers, Users, References, Reviews.
+"""
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import String, Text, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+import enum
+
+from app.core.database import Base
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class UserRole(str, enum.Enum):
+    student = "student"
+    faculty = "faculty"
+    admin = "admin"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(120))
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[UserRole] = mapped_column(
+        SAEnum(UserRole, native_enum=False, length=20), default=UserRole.student
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    references: Mapped[list["Reference"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+    reviews: Mapped[list["Review"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+
+
+class Paper(Base):
+    __tablename__ = "papers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    arxiv_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    abstract: Mapped[str] = mapped_column(Text)
+    authors: Mapped[str] = mapped_column(Text)  # comma-separated
+    link: Mapped[str] = mapped_column(String(500))
+    source: Mapped[str] = mapped_column(String(50), default="arxiv")
+    categories: Mapped[str] = mapped_column(Text, default="")  # comma-separated arXiv categories
+    published: Mapped[str] = mapped_column(String(40), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")  # cached extractive summary
+    added_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Reference(Base):
+    __tablename__ = "references_table"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id"))
+    bibtex_entry: Mapped[str] = mapped_column(Text)
+    apa_entry: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    owner: Mapped["User"] = relationship(back_populates="references")
+    paper: Mapped["Paper"] = relationship()
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    title: Mapped[str] = mapped_column(String(300))
+    paper_ids: Mapped[str] = mapped_column(Text)  # comma-separated Paper.id list
+    content_markdown: Mapped[str] = mapped_column(Text)
+    gaps_json: Mapped[str] = mapped_column(Text, default="[]")
+    export_path: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(30), default="draft")  # draft | approved
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    owner: Mapped["User"] = relationship(back_populates="reviews")
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\models\schemas.py =====
+
+"""
+Pydantic schemas: the contract between frontend and backend.
+Kept separate from ORM models so DB structure can evolve independently
+of what we expose over the API.
+"""
+from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field
+from app.models.orm import UserRole
+
+
+# ---------- Auth / Users ----------
+
+class UserCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+    role: UserRole = UserRole.student
+
+
+class UserOut(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    role: UserRole
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+# ---------- Papers / Search ----------
+
+class PaperOut(BaseModel):
+    id: str
+    arxiv_id: str
+    title: str
+    abstract: str
+    authors: str
+    link: str
+    source: str
+    categories: str
+    published: str
+    summary: str
+    added_date: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=300)
+    max_results: int = Field(default=10, ge=1, le=30)
+
+
+class SummarizeRequest(BaseModel):
+    paper_id: str
+    sentence_count: int = Field(default=4, ge=2, le=8)
+
+
+# ---------- References ----------
+
+class ReferenceCreate(BaseModel):
+    paper_id: str
+
+
+class ReferenceOut(BaseModel):
+    id: str
+    paper_id: str
+    bibtex_entry: str
+    apa_entry: str
+    created_at: datetime
+    paper: PaperOut
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Gap Detection ----------
+
+class GapDetectionRequest(BaseModel):
+    paper_ids: list[str] = Field(min_length=2, max_length=50)
+
+
+class GapCluster(BaseModel):
+    keyword: str
+    frequency: int
+    coverage_ratio: float
+    flag: str  # "under_represented" | "well_covered"
+
+
+class GapDetectionResponse(BaseModel):
+    total_papers_analyzed: int
+    clusters: list[GapCluster]
+    candidate_gaps: list[str]
+    disclaimer: str = (
+        "These are candidate gaps surfaced via keyword frequency analysis. "
+        "They require human expert judgement before being treated as confirmed research gaps."
+    )
+
+
+# ---------- Review Generation ----------
+
+class ReviewGenerateRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    paper_ids: list[str] = Field(min_length=1, max_length=50)
+    include_gap_analysis: bool = True
+
+
+class ReviewOut(BaseModel):
+    id: str
+    title: str
+    paper_ids: str
+    content_markdown: str
+    gaps_json: str
+    export_path: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\models\__init__.py =====
+
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\auth.py =====
+
+"""
+FR7: User authentication and roles.
+
+Login and register are rate-limited (per client IP) to slow down
+brute-force / credential-stuffing attempts in production. Limits are
+configurable via LOGIN_RATE_LIMIT / REGISTER_RATE_LIMIT in core/config.py.
+"""
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.config import settings
+from app.core.database import get_db
+from app.core.security import hash_password, verify_password, create_access_token
+from app.core.deps import get_current_user
+from app.core.limiter import limiter
+from app.models.orm import User
+from app.models.schemas import UserCreate, UserOut, LoginRequest, TokenResponse
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit(settings.REGISTER_RATE_LIMIT)
+async def register(request: Request, payload: UserCreate, db: AsyncSession = Depends(get_db)):
+    existing = await db.execute(select(User).where(User.email == payload.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(
+        name=payload.name,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/login", response_model=TokenResponse)
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == payload.email))
+    user = result.scalar_one_or_none()
+
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    token = create_access_token(subject=user.id, role=user.role.value)
+    return TokenResponse(access_token=token, user=user)
+
+
+@router.get("/me", response_model=UserOut)
+async def me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\gaps.py =====
+
+"""
+FR5: Detect research gaps.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.models.orm import User, Paper
+from app.models.schemas import GapDetectionRequest, GapDetectionResponse
+from app.services.gap_detection import detect_gaps
+
+router = APIRouter(prefix="/gaps", tags=["gap-detection"])
+
+
+@router.post("/detect", response_model=GapDetectionResponse)
+async def detect_research_gaps(
+    payload: GapDetectionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Paper).where(Paper.id.in_(payload.paper_ids)))
+    papers = result.scalars().all()
+
+    if len(papers) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 valid papers are required for gap analysis",
+        )
+
+    return detect_gaps(papers)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\papers.py =====
+
+"""
+FR1: Search papers via arXiv API.
+FR2: Summarize abstracts.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.models.orm import User, Paper
+from app.models.schemas import PaperOut, SearchRequest, SummarizeRequest
+from app.services.arxiv_search import search_arxiv, ArxivSearchError
+from app.services.summarizer import extractive_summary
+
+router = APIRouter(prefix="/papers", tags=["papers"])
+
+
+@router.post("/search", response_model=list[PaperOut])
+async def search_papers(
+    payload: SearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    FR1. Searches arXiv live, then upserts results into the local
+    Papers table so they can be referenced (summarized, cited, added
+    to a review) by ID afterward. Graceful degradation on API failure
+    per NFR: Reliability.
+    """
+    try:
+        raw_results = await search_arxiv(payload.query, payload.max_results)
+    except ArxivSearchError as exc:
+        raise HTTPException(status_code=503, detail=f"arXiv search unavailable: {exc}")
+
+    if not raw_results:
+        return []
+
+    saved_papers: list[Paper] = []
+    for r in raw_results:
+        existing = await db.execute(select(Paper).where(Paper.arxiv_id == r["arxiv_id"]))
+        paper = existing.scalar_one_or_none()
+        if paper is None:
+            paper = Paper(
+                arxiv_id=r["arxiv_id"],
+                title=r["title"],
+                abstract=r["abstract"],
+                authors=r["authors"],
+                link=r["link"],
+                categories=r["categories"],
+                published=r["published"],
+            )
+            db.add(paper)
+        saved_papers.append(paper)
+
+    await db.commit()
+    for p in saved_papers:
+        await db.refresh(p)
+
+    return saved_papers
+
+
+@router.post("/summarize", response_model=PaperOut)
+async def summarize_paper(
+    payload: SummarizeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """FR2. Computes (and caches) an extractive summary for a stored paper."""
+    result = await db.execute(select(Paper).where(Paper.id == payload.paper_id))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    paper.summary = extractive_summary(paper.abstract, payload.sentence_count)
+    await db.commit()
+    await db.refresh(paper)
+    return paper
+
+
+@router.get("/{paper_id}", response_model=PaperOut)
+async def get_paper(
+    paper_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return paper
+
+
+@router.get("", response_model=list[PaperOut])
+async def list_papers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Convenience endpoint: list all locally cached papers (e.g. for the review-selection UI)."""
+    result = await db.execute(select(Paper).order_by(Paper.added_date.desc()))
+    return result.scalars().all()
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\references.py =====
+
+"""
+FR3: Generate citations (APA/BibTeX).
+FR4: Add/manage references in local database.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.models.orm import User, Paper, Reference
+from app.models.schemas import ReferenceCreate, ReferenceOut
+from app.services.citations import to_bibtex, to_apa
+
+router = APIRouter(prefix="/references", tags=["references"])
+
+
+@router.post("", response_model=ReferenceOut, status_code=201)
+async def add_reference(
+    payload: ReferenceCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """FR3 + FR4: generates citations for a paper and saves it to the user's reference library."""
+    result = await db.execute(select(Paper).where(Paper.id == payload.paper_id))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    existing = await db.execute(
+        select(Reference).where(
+            Reference.user_id == current_user.id, Reference.paper_id == paper.id
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Reference already saved")
+
+    reference = Reference(
+        user_id=current_user.id,
+        paper_id=paper.id,
+        bibtex_entry=to_bibtex(paper),
+        apa_entry=to_apa(paper),
+    )
+    db.add(reference)
+    await db.commit()
+
+    result = await db.execute(
+        select(Reference)
+        .options(selectinload(Reference.paper))
+        .where(Reference.id == reference.id)
+    )
+    return result.scalar_one()
+
+
+@router.get("", response_model=list[ReferenceOut])
+async def list_references(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """FR4: list the current user's saved references."""
+    result = await db.execute(
+        select(Reference)
+        .options(selectinload(Reference.paper))
+        .where(Reference.user_id == current_user.id)
+        .order_by(Reference.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.delete("/{reference_id}", status_code=204)
+async def delete_reference(
+    reference_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """FR4: remove a reference from the user's library."""
+    result = await db.execute(
+        select(Reference).where(
+            Reference.id == reference_id, Reference.user_id == current_user.id
+        )
+    )
+    reference = result.scalar_one_or_none()
+    if not reference:
+        raise HTTPException(status_code=404, detail="Reference not found")
+
+    await db.delete(reference)
+    await db.commit()
+    return None
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\reviews.py =====
+
+"""
+FR6: Generate literature review document.
+FR8: Export references and reviews.
+Also implements the Faculty-only "approve shared review" permission
+from the SRS User Roles section.
+"""
+import json
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.core.deps import get_current_user, require_role
+from app.models.orm import User, Paper, Review, UserRole
+from app.models.schemas import ReviewGenerateRequest, ReviewOut
+from app.services.gap_detection import detect_gaps
+from app.services.review_generator import generate_review_markdown
+from app.services.review_export import markdown_to_docx_bytes
+from app.services.summarizer import extractive_summary
+
+router = APIRouter(prefix="/reviews", tags=["reviews"])
+
+
+@router.post("/generate", response_model=ReviewOut, status_code=201)
+async def generate_review(
+    payload: ReviewGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """FR6: builds a structured review draft from the selected papers."""
+    result = await db.execute(select(Paper).where(Paper.id.in_(payload.paper_ids)))
+    papers = result.scalars().all()
+
+    if not papers:
+        raise HTTPException(status_code=404, detail="No matching papers found")
+
+    changed = False
+    for p in papers:
+        if not p.summary:
+            p.summary = extractive_summary(p.abstract, 4)
+            changed = True
+    if changed:
+        await db.commit()
+
+    gaps = None
+    if payload.include_gap_analysis and len(papers) >= 2:
+        gaps = detect_gaps(papers)
+
+    markdown = generate_review_markdown(payload.title, papers, gaps)
+
+    review = Review(
+        user_id=current_user.id,
+        title=payload.title,
+        paper_ids=",".join(p.id for p in papers),
+        content_markdown=markdown,
+        gaps_json=json.dumps(gaps.model_dump()) if gaps else "[]",
+        status="draft",
+    )
+    db.add(review)
+    await db.commit()
+    await db.refresh(review)
+    return review
+
+
+@router.get("/{review_id}", response_model=ReviewOut)
+async def get_review(
+    review_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Review).where(Review.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return review
+
+
+@router.get("", response_model=list[ReviewOut])
+async def list_reviews(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Review).where(Review.user_id == current_user.id).order_by(Review.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/{review_id}/download")
+async def download_review(
+    review_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    FR8: renders the review's Markdown into a .docx and streams it back
+    in this same request. Also marks the review as exported. Combining
+    generation and download into one request avoids relying on a file
+    written to disk in an earlier request being readable later - see
+    services/review_export.py for why that matters on serverless hosts.
+    """
+    result = await db.execute(select(Review).where(Review.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    docx_bytes = markdown_to_docx_bytes(review.content_markdown)
+
+    review.export_path = "generated"  # marker only; the file itself is not persisted server-side
+    await db.commit()
+
+    filename = f"{review.title.replace(' ', '_')}.docx"
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{review_id}/approve", response_model=ReviewOut)
+async def approve_review(
+    review_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.faculty, UserRole.admin)),
+):
+    """
+    Faculty/Admin-only: 'approve shared reviews' per SRS User Roles
+    section. Demonstrates server-side role enforcement (FR7).
+    """
+    result = await db.execute(select(Review).where(Review.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    review.status = "approved"
+    await db.commit()
+    await db.refresh(review)
+    return review
+
+    review.status = "approved"
+    await db.commit()
+    await db.refresh(review)
+    return review
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\routers\__init__.py =====
+
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\arxiv_search.py =====
+
+"""
+FR1: Search papers via the arXiv API.
+
+arXiv's API returns Atom XML; feedparser handles that cleanly without
+us hand-rolling an XML parser. No API key required, which keeps this
+in the "public API, zero subscription cost" scope the SRS commits to.
+"""
+import httpx
+import feedparser
+from urllib.parse import quote
+
+from app.core.config import settings
+
+
+class ArxivSearchError(Exception):
+    pass
+
+
+async def search_arxiv(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Returns a list of dicts: arxiv_id, title, abstract, authors, link,
+    categories, published. Raises ArxivSearchError on failure so the
+    router can turn that into a graceful HTTP error (NFR: Reliability).
+    """
+    search_query = f"all:{quote(query)}"
+    url = (
+        f"{settings.ARXIV_API_URL}?search_query={search_query}"
+        f"&start=0&max_results={max_results}&sortBy=relevance&sortOrder=descending"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.ARXIV_TIMEOUT_SECONDS) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ArxivSearchError(f"arXiv API request failed: {exc}") from exc
+
+    feed = feedparser.parse(resp.text)
+    if feed.bozo and not feed.entries:
+        raise ArxivSearchError("arXiv API returned unparseable response")
+
+    results = []
+    for entry in feed.entries:
+        arxiv_id = entry.get("id", "").split("/abs/")[-1]
+        authors = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+        categories = ", ".join(t.get("term", "") for t in entry.get("tags", []))
+        results.append({
+            "arxiv_id": arxiv_id,
+            "title": " ".join(entry.get("title", "").split()),  # collapse newlines/whitespace
+            "abstract": " ".join(entry.get("summary", "").split()),
+            "authors": authors,
+            "link": entry.get("link", ""),
+            "categories": categories,
+            "published": entry.get("published", ""),
+        })
+    return results
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\citations.py =====
+
+"""
+FR3: Generate citations in BibTeX and APA format from a Paper record.
+"""
+import re
+from app.models.orm import Paper
+
+
+def _bibtex_key(paper: Paper) -> str:
+    first_author_last = "unknown"
+    if paper.authors:
+        first_author = paper.authors.split(",")[0].strip()
+        parts = first_author.split()
+        if parts:
+            first_author_last = re.sub(r"[^A-Za-z]", "", parts[-1]).lower() or "unknown"
+
+    year = _extract_year(paper.published) or "n_d"
+    first_word = re.sub(r"[^A-Za-z]", "", (paper.title.split()[0] if paper.title else "paper")).lower()
+    return f"{first_author_last}{year}{first_word}"
+
+
+def _extract_year(published: str) -> str:
+    match = re.match(r"(\d{4})", published or "")
+    return match.group(1) if match else ""
+
+
+def to_bibtex(paper: Paper) -> str:
+    key = _bibtex_key(paper)
+    year = _extract_year(paper.published) or "n.d."
+    authors_bibtex = " and ".join(a.strip() for a in (paper.authors or "").split(",") if a.strip())
+
+    return (
+        f"@article{{{key},\n"
+        f"  title   = {{{paper.title}}},\n"
+        f"  author  = {{{authors_bibtex}}},\n"
+        f"  year    = {{{year}}},\n"
+        f"  journal = {{arXiv preprint {paper.arxiv_id}}},\n"
+        f"  url     = {{{paper.link}}}\n"
+        f"}}"
+    )
+
+
+def _apa_authors(authors_csv: str) -> str:
+    authors = [a.strip() for a in (authors_csv or "").split(",") if a.strip()]
+    if not authors:
+        return "Unknown Author"
+
+    def to_apa_name(full_name: str) -> str:
+        parts = full_name.split()
+        if len(parts) < 2:
+            return full_name
+        last = parts[-1]
+        initials = " ".join(f"{p[0]}." for p in parts[:-1])
+        return f"{last}, {initials}"
+
+    apa_names = [to_apa_name(a) for a in authors]
+    if len(apa_names) == 1:
+        return apa_names[0]
+    if len(apa_names) <= 20:
+        return ", ".join(apa_names[:-1]) + f", & {apa_names[-1]}"
+    # APA 7th: 20+ authors -> first 19, ellipsis, last author
+    return ", ".join(apa_names[:19]) + ", ... " + apa_names[-1]
+
+
+def to_apa(paper: Paper) -> str:
+    year = _extract_year(paper.published) or "n.d."
+    authors = _apa_authors(paper.authors)
+    return f"{authors} ({year}). {paper.title}. arXiv. {paper.link}"
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\gap_detection.py =====
+
+"""
+FR5: Detect candidate research gaps via thematic/frequency analysis.
+
+Method (deliberately simple and explainable, per SRS scope §15
+Limitations - this is NOT a semantic/citation-network gap analysis):
+
+  1. Extract noun-like keyword candidates from each paper's abstract.
+  2. Build a keyword -> paper-coverage map across the selected set.
+  3. A keyword that appears in only a small fraction of papers, but
+     appears meaningfully (>=1 strong mention) is flagged as an
+     "under_represented" theme - a candidate gap worth a human look.
+  4. A keyword appearing across most papers is "well_covered" - the
+     opposite signal, useful for showing the method isn't just noise.
+
+This is intentionally transparent: every score is traceable back to a
+keyword count, so it can be explained line-by-line in a viva. It is
+explicitly NOT presented as a definitive research-gap claim - see
+GapDetectionResponse.disclaimer.
+"""
+import re
+from collections import defaultdict
+from app.models.orm import Paper
+from app.models.schemas import GapCluster, GapDetectionResponse
+
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "for", "to", "with",
+    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these",
+    "those", "we", "our", "it", "its", "as", "by", "at", "from", "which", "such",
+    "can", "also", "into", "than", "then", "using", "used", "use", "based",
+    "not", "no", "have", "has", "had", "will", "would", "may", "might", "their",
+    "results", "paper", "study", "propose", "proposed", "show", "shows",
+    "method", "methods", "approach", "approaches", "work", "novel", "new",
+}
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z\-]{2,}")
+
+
+def _keywords(text: str) -> set[str]:
+    words = _WORD_RE.findall(text.lower())
+    return {w for w in words if w not in _STOPWORDS and len(w) > 3}
+
+
+def detect_gaps(papers: list[Paper]) -> GapDetectionResponse:
+    total = len(papers)
+    keyword_paper_count: dict[str, int] = defaultdict(int)
+    keyword_total_mentions: dict[str, int] = defaultdict(int)
+
+    for paper in papers:
+        text = f"{paper.title} {paper.abstract}"
+        words = _WORD_RE.findall(text.lower())
+        words = [w for w in words if w not in _STOPWORDS and len(w) > 3]
+        present = set(words)
+        for kw in present:
+            keyword_paper_count[kw] += 1
+        for kw in words:
+            keyword_total_mentions[kw] += 1
+
+    single_paper_ratio = 1 / total if total else 0.0
+    under_represented_ceiling = single_paper_ratio * 1.5
+    well_covered_floor = 0.5 if total <= 4 else 0.6
+
+    clusters: list[GapCluster] = []
+    for kw, paper_count in keyword_paper_count.items():
+        mentions = keyword_total_mentions[kw]
+        if mentions < 2:
+            continue
+        coverage_ratio = paper_count / total if total else 0.0
+        if total >= 3 and coverage_ratio <= under_represented_ceiling:
+            flag = "under_represented"
+        elif coverage_ratio >= well_covered_floor:
+            flag = "well_covered"
+        else:
+            continue
+        clusters.append(GapCluster(
+            keyword=kw,
+            frequency=mentions,
+            coverage_ratio=round(coverage_ratio, 3),
+            flag=flag,
+        ))
+
+    clusters.sort(key=lambda c: (c.flag != "under_represented", -c.frequency))
+    clusters = clusters[:20]
+
+    candidate_gaps = [
+        f"'{c.keyword}' appears in only {round(c.coverage_ratio * 100)}% of the "
+        f"selected papers ({c.frequency} mentions total) - potentially under-explored "
+        f"within this paper set."
+        for c in clusters if c.flag == "under_represented"
+    ][:8]
+
+    return GapDetectionResponse(
+        total_papers_analyzed=total,
+        clusters=clusters,
+        candidate_gaps=candidate_gaps,
+    )
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\review_export.py =====
+
+"""
+FR8: Export generated literature reviews as .docx.
+
+Takes the Markdown produced by review_generator.py and renders it into
+a real Word document using python-docx.
+
+Returns raw bytes rather than writing to disk and returning a path.
+This is deliberate: on serverless platforms (Vercel), each HTTP request
+can be handled by a different function instance with its own ephemeral
+/tmp, so a "write file in request A, read it back in request B"
+pattern is unreliable there. Building the docx entirely in memory and
+returning it in the same request that generated it works identically
+in local dev and in serverless production.
+"""
+import re
+from io import BytesIO
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _add_paragraph_with_bold(doc: Document, text: str, style: str | None = None):
+    p = doc.add_paragraph(style=style)
+    pos = 0
+    for match in _BOLD_RE.finditer(text):
+        if match.start() > pos:
+            p.add_run(text[pos:match.start()])
+        run = p.add_run(match.group(1))
+        run.bold = True
+        pos = match.end()
+    if pos < len(text):
+        p.add_run(text[pos:])
+    return p
+
+
+def markdown_to_docx_bytes(markdown_text: str) -> bytes:
+    doc = Document()
+
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    for raw_line in markdown_text.split("\n"):
+        line = raw_line.rstrip()
+        if not line:
+            continue
+
+        if line.startswith("### "):
+            doc.add_heading(line[4:], level=3)
+        elif line.startswith("## "):
+            doc.add_heading(line[3:], level=2)
+        elif line.startswith("# "):
+            h = doc.add_heading(line[2:], level=1)
+            h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        elif line.startswith("*") and line.endswith("*") and not line.startswith("**"):
+            p = doc.add_paragraph()
+            run = p.add_run(line.strip("*"))
+            run.italic = True
+        elif line.startswith("- "):
+            _add_paragraph_with_bold(doc, line[2:], style="List Bullet")
+        else:
+            _add_paragraph_with_bold(doc, line)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.read()
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\review_generator.py =====
+
+"""
+FR6: Generate a structured literature review draft from selected papers.
+
+Structure produced (matches SRS Review Generator flow: Select -> Generate
+-> Preview -> Export):
+  1. Introduction (auto-composed from paper count + topic keywords)
+  2. Thematic grouping of papers (grouped by dominant arXiv category)
+  3. Per-paper synthesis paragraph (built from cached extractive summary)
+  4. Candidate research gaps section (optional, from gap_detection)
+  5. References section (APA)
+
+Output is Markdown (content_markdown) for easy preview in the frontend,
+and is also rendered to .docx for FR8 export via review_export.py.
+"""
+from collections import defaultdict
+from app.models.orm import Paper
+from app.models.schemas import GapDetectionResponse
+from app.services.citations import to_apa
+
+
+def _primary_category(categories_csv: str) -> str:
+    cats = [c.strip() for c in (categories_csv or "").split(",") if c.strip()]
+    return cats[0] if cats else "Uncategorized"
+
+
+def generate_review_markdown(
+    title: str,
+    papers: list[Paper],
+    gaps: GapDetectionResponse | None = None,
+) -> str:
+    lines: list[str] = []
+    lines.append(f"# {title}\n")
+
+    # --- Introduction ---
+    lines.append("## 1. Introduction\n")
+    lines.append(
+        f"This literature review synthesizes **{len(papers)} papers** retrieved from arXiv, "
+        f"covering the selected research area. Papers are grouped thematically below by their "
+        f"primary subject category, with a synthesis of each paper's core contribution followed "
+        f"by candidate research gaps identified through frequency-based thematic analysis.\n"
+    )
+
+    # --- Thematic grouping ---
+    groups: dict[str, list[Paper]] = defaultdict(list)
+    for p in papers:
+        groups[_primary_category(p.categories)].append(p)
+
+    lines.append("## 2. Thematic Overview\n")
+    for category, group_papers in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"### 2.{list(groups.keys()).index(category) + 1} {category} ({len(group_papers)} paper(s))\n")
+        for p in group_papers:
+            summary_text = p.summary or p.abstract[:280]
+            authors_short = p.authors.split(",")[0].strip() + (" et al." if "," in p.authors else "")
+            lines.append(f"**{p.title}** ({authors_short}). {summary_text}\n")
+
+    # --- Gaps ---
+    if gaps and gaps.candidate_gaps:
+        lines.append("## 3. Candidate Research Gaps\n")
+        lines.append(f"*{gaps.disclaimer}*\n")
+        for gap in gaps.candidate_gaps:
+            lines.append(f"- {gap}")
+        lines.append("")
+
+    # --- References ---
+    section_num = 4 if gaps and gaps.candidate_gaps else 3
+    lines.append(f"## {section_num}. References\n")
+    for p in sorted(papers, key=lambda x: x.title):
+        lines.append(f"- {to_apa(p)}")
+
+    return "\n".join(lines)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\summarizer.py =====
+
+"""
+FR2: Extractive summarization of paper abstracts.
+
+Approach: frequency-weighted sentence scoring (a classic, explainable
+extractive method - Luhn's algorithm lineage). No external ML model or
+paid API is required, matching the SRS's "rule-based + extractive
+summarization" architecture decision.
+
+Why extractive and not abstractive here:
+  - Zero cost, zero external API dependency, deterministic output.
+  - Defensible in a viva: every sentence in the summary is a real
+    sentence from the source, so there is no hallucination risk.
+  - Abstractive (LLM-based) summarization is explicitly scoped as a
+    future phase in the SRS (AI Layer: "future Ollama integration").
+"""
+import re
+from collections import Counter
+
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "for", "to", "with",
+    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these",
+    "those", "we", "our", "it", "its", "as", "by", "at", "from", "which", "such",
+    "can", "also", "into", "than", "then", "using", "used", "use", "based",
+    "not", "no", "have", "has", "had", "will", "would", "may", "might", "their",
+    "these", "results", "paper", "study",
+}
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    return [s.strip() for s in sentences if len(s.strip()) > 0]
+
+
+def _word_frequencies(sentences: list[str]) -> Counter:
+    freq = Counter()
+    for sentence in sentences:
+        words = _WORD_RE.findall(sentence.lower())
+        for w in words:
+            if w not in _STOPWORDS and len(w) > 2:
+                freq[w] += 1
+    return freq
+
+
+def extractive_summary(text: str, sentence_count: int = 4) -> str:
+    """
+    Scores each sentence by the sum of its (normalized) word
+    frequencies, then returns the top-N highest scoring sentences in
+    their ORIGINAL order (so the summary still reads coherently).
+    """
+    sentences = _split_sentences(text)
+    if len(sentences) <= sentence_count:
+        return " ".join(sentences)
+
+    freq = _word_frequencies(sentences)
+    if not freq:
+        return " ".join(sentences[:sentence_count])
+
+    max_freq = max(freq.values())
+    normalized = {w: c / max_freq for w, c in freq.items()}
+
+    scores = []
+    for idx, sentence in enumerate(sentences):
+        words = _WORD_RE.findall(sentence.lower())
+        if not words:
+            scores.append((idx, 0.0))
+            continue
+        # Slight position bias: earlier sentences in an abstract tend to
+        # state the core contribution (standard abstract convention).
+        position_bias = 1.0 if idx == 0 else 0.9
+        raw = sum(normalized.get(w, 0.0) for w in words) / len(words)
+        scores.append((idx, raw * position_bias))
+
+    top_indices = sorted(
+        sorted(scores, key=lambda x: x[1], reverse=True)[:sentence_count],
+        key=lambda x: x[0],  # restore original order
+    )
+    return " ".join(sentences[i] for i, _ in top_indices)
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\services\__init__.py =====
+
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\main.py =====
+
+"""
+AI Research Assistant - FastAPI application entry point.
+
+Local dev:
+    uvicorn app.main:app --reload --port 8000
+    -> creates SQLite tables and seeds demo@college.edu / demo1234
+
+Production (ENV=production):
+    -> connects to DATABASE_URL (Supabase Postgres), does NOT seed the
+       demo account, enforces a real JWT_SECRET, and applies rate
+       limiting + security headers.
+"""
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from app.core.config import settings
+from app.core.database import init_db, AsyncSessionLocal
+from app.core.security import hash_password
+from app.core.limiter import limiter
+from app.models.orm import User, UserRole
+from app.routers import auth, papers, references, gaps, reviews
+
+
+async def _seed_demo_user():
+    """Only ever runs when SEED_DEMO_USER=true (local/dev default). In
+    production this is disabled so no publicly-documented credential
+    exists on the live deployment - see core/config.py."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.email == "demo@college.edu"))
+        if result.scalar_one_or_none():
+            return
+        demo_user = User(
+            name="Demo Faculty",
+            email="demo@college.edu",
+            password_hash=hash_password("demo1234"),
+            role=UserRole.faculty,
+        )
+        db.add(demo_user)
+        await db.commit()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    if settings.SEED_DEMO_USER and not settings.is_production:
+        await _seed_demo_user()
+    yield
+
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description="Literature search, summarization, gap detection, and automated review generation.",
+    version="2.0.0",
+    lifespan=lifespan,
+    # Hide interactive API docs in production - they're a convenience for
+    # grading/dev, not something a public deployment should expose.
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Baseline security headers. Not a substitute for HTTPS termination
+    (Vercel provides that at the edge) but closes off common client-side
+    injection/sniffing vectors."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
+
+app.include_router(auth.router)
+app.include_router(papers.router)
+app.include_router(references.router)
+app.include_router(gaps.router)
+app.include_router(reviews.router)
+
+
+@app.get("/")
+async def root():
+    payload = {
+        "app": settings.APP_NAME,
+        "status": "running",
+        "docs": "/docs" if not settings.is_production else None,
+    }
+    if not settings.is_production:
+        payload["demo_login"] = {"email": "demo@college.edu", "password": "demo1234"}
+    return payload
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\app\__init__.py =====
+
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\tests\test_security.py =====
+
+import unittest
+
+from app.core.security import hash_password, verify_password
+
+
+class SecurityTests(unittest.TestCase):
+    def test_password_roundtrip(self):
+        password = "demo1234"
+        hashed = hash_password(password)
+        self.assertTrue(verify_password(password, hashed))
+        self.assertFalse(verify_password("wrong-password", hashed))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\requirements.txt =====
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+aiosqlite==0.20.0
+asyncpg==0.29.0
+pydantic==2.9.2
+pydantic[email]==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.1
+python-multipart==0.0.9
+httpx==0.27.2
+feedparser==6.0.11
+python-docx==1.1.2
+slowapi==0.1.9
+mangum==0.17.0
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\update_demo_user.py =====
+
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app.core.database import AsyncSessionLocal
+from app.models.orm import User
+from sqlalchemy import select
+from app.core.security import hash_password
+
+
+async def main() -> None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.email == 'demo@college.edu'))
+        user = result.scalar_one_or_none()
+        if user:
+            user.password_hash = hash_password('demo1234')
+            await db.commit()
+            print('updated demo user password hash')
+        else:
+            print('demo user not found')
+asyncio.run(main())
+
+
+===== C:\Users\Chinmai Seshadri\Downloads\ai-research-assistant\backend\vercel.json =====
+
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "15mb" }
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "api/index.py" }
+  ]
+}
