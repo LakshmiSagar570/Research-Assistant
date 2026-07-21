@@ -1,53 +1,102 @@
 """
 Async SQLAlchemy engine + session factory.
 
-Local dev uses SQLite via aiosqlite (zero setup). Production uses Supabase
-Postgres via asyncpg. Supabase gives you a connection string that starts
-with `postgresql://` - SQLAlchemy's async engine needs the driver spelled
-out (`postgresql+asyncpg://`), so we normalize that here rather than
-requiring you to hand-edit the URL Supabase gives you.
+Local development uses SQLite via aiosqlite.
+Production uses Supabase PostgreSQL via asyncpg.
 """
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
-from app.core.config import settings
 from sqlalchemy.pool import NullPool
+
+from app.core.config import settings
 
 
 def _normalize_database_url(url: str) -> str:
+    """Convert postgres URLs to SQLAlchemy async format."""
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgres://"):  # some providers use this shorthand
+
+    if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+asyncpg://", 1)
+
     return url
 
 
-_engine_kwargs = {"echo": False, "future": True}
+# ------------------------------------------------------------------
+# Database URL
+# ------------------------------------------------------------------
+
+if not settings.DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set.")
+
 _db_url = _normalize_database_url(settings.DATABASE_URL)
-engine = create_async_engine(_db_url, **_engine_kwargs)
+
+# ------------------------------------------------------------------
+# Engine configuration
+# ------------------------------------------------------------------
+
+_engine_kwargs = {
+    "echo": False,
+    "future": True,
+}
+
 if _db_url.startswith("postgresql+asyncpg://"):
-    _engine_kwargs["connect_args"] = {"ssl": "require", "statement_cache_size": 0}
-    _engine_kwargs["poolclass"] = NullPool
+    _engine_kwargs.update(
+        {
+            "connect_args": {
+                "ssl": "require",
+                "statement_cache_size": 0,
+            },
+            "poolclass": NullPool,
+        }
+    )
 else:
+    # SQLite
     _engine_kwargs["pool_pre_ping"] = True
 
+# ------------------------------------------------------------------
+# Engine
+# ------------------------------------------------------------------
+
 engine = create_async_engine(_db_url, **_engine_kwargs)
+
+# ------------------------------------------------------------------
+# Session
+# ------------------------------------------------------------------
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+
+# ------------------------------------------------------------------
+# Base Model
+# ------------------------------------------------------------------
+
 class Base(DeclarativeBase):
     pass
 
 
+# ------------------------------------------------------------------
+# Dependency
+# ------------------------------------------------------------------
+
 async def get_db():
-    """FastAPI dependency yielding a scoped async session per request."""
     async with AsyncSessionLocal() as session:
         yield session
 
 
+# ------------------------------------------------------------------
+# Initialize DB
+# ------------------------------------------------------------------
+
 async def init_db():
-    """Create all tables on startup. Fine for this project's scale; use Alembic migrations for larger schemas."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
