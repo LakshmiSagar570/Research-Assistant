@@ -31,12 +31,12 @@ else:
     _engine_kwargs["pool_pre_ping"] = True
 
 engine = create_async_engine(_db_url, **_engine_kwargs)
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
 class Base(DeclarativeBase):
     pass
 
