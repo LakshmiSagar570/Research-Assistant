@@ -36,6 +36,7 @@ if not settings.DATABASE_URL:
 
 _db_url = _normalize_database_url(settings.DATABASE_URL)
 
+
 # ------------------------------------------------------------------
 # Engine configuration
 # ------------------------------------------------------------------
@@ -59,14 +60,19 @@ else:
     # SQLite
     _engine_kwargs["pool_pre_ping"] = True
 
+
 # ------------------------------------------------------------------
 # Engine
 # ------------------------------------------------------------------
 
-engine = create_async_engine(_db_url, **_engine_kwargs)
+engine = create_async_engine(
+    _db_url,
+    **_engine_kwargs,
+)
+
 
 # ------------------------------------------------------------------
-# Session
+# Session Factory
 # ------------------------------------------------------------------
 
 AsyncSessionLocal = async_sessionmaker(
@@ -94,7 +100,7 @@ async def get_db():
 
 
 # ------------------------------------------------------------------
-# Initialize DB
+# Initialize Database
 # ------------------------------------------------------------------
 
 async def init_db():
