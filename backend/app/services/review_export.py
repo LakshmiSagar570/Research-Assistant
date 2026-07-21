@@ -2,22 +2,21 @@
 FR8: Export generated literature reviews as .docx.
 
 Takes the Markdown produced by review_generator.py and renders it into
-a real Word document using python-docx, matching the SRS tech stack
-("Document Generation: python-docx").
+a real Word document using python-docx.
 
-This is a small, deliberately simple Markdown -> docx renderer: it only
-needs to handle the subset of Markdown that generate_review_markdown()
-actually produces (#/##/### headings, **bold**, "- " bullets, plain
-paragraphs). It is not a general-purpose Markdown parser.
+Returns raw bytes rather than writing to disk and returning a path.
+This is deliberate: on serverless platforms (Vercel), each HTTP request
+can be handled by a different function instance with its own ephemeral
+/tmp, so a "write file in request A, read it back in request B"
+pattern is unreliable there. Building the docx entirely in memory and
+returning it in the same request that generated it works identically
+in local dev and in serverless production.
 """
 import re
-import uuid
-from pathlib import Path
+from io import BytesIO
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-from app.core.config import settings
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
@@ -36,10 +35,9 @@ def _add_paragraph_with_bold(doc: Document, text: str, style: str | None = None)
     return p
 
 
-def markdown_to_docx(markdown_text: str, review_id: str) -> str:
+def markdown_to_docx_bytes(markdown_text: str) -> bytes:
     doc = Document()
 
-    # Base font
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(11)
@@ -65,7 +63,7 @@ def markdown_to_docx(markdown_text: str, review_id: str) -> str:
         else:
             _add_paragraph_with_bold(doc, line)
 
-    filename = f"review_{review_id}_{uuid.uuid4().hex[:8]}.docx"
-    out_path = Path(settings.EXPORTS_DIR) / filename
-    doc.save(str(out_path))
-    return str(out_path)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.read()

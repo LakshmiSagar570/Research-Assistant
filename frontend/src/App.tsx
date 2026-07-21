@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import LoginPage from "./pages/LoginPage";
+import SignUpPage from "./pages/SignUpPage";
 import DashboardPage from "./pages/DashboardPage";
 import SearchPage from "./pages/SearchPage";
 import ReferencesPage from "./pages/ReferencesPage";
@@ -27,6 +28,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignUpPage />} />
       <Route
         path="/"
         element={

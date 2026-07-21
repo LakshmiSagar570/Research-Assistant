@@ -6,8 +6,7 @@ import { Card, Button, Badge, Spinner } from "../components/ui";
 import { useAuth } from "../auth/AuthContext";
 import {
   api,
-  exportReview,
-  downloadReviewUrl,
+  downloadReview,
   approveReview,
   type Review,
   type GapDetectionResult,
@@ -86,9 +85,7 @@ export default function ReviewDetailPage() {
     if (!review) return;
     setExporting(true);
     try {
-      const updated = await exportReview(review.id);
-      setReview(updated);
-      window.open(downloadReviewUrl(review.id), "_blank");
+      await downloadReview(review.id, review.title);
     } finally {
       setExporting(false);
     }

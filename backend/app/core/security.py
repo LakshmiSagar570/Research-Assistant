@@ -1,37 +1,27 @@
 """
 Password hashing and JWT issuance/verification.
 
-Kept intentionally simple (FR7: authentication + roles) - this is a
-college-project auth layer, not a hardened production system. It still
-does the fundamentals correctly: bcrypt hashing, short-lived signed
-tokens, server-side role checks (see core/deps.py).
+Uses the bcrypt library directly rather than through passlib's
+CryptContext wrapper. passlib's bcrypt backend reads bcrypt's internal
+version string to detect the installed backend, and this detection
+breaks against bcrypt>=4.1 (a passlib bug, unfixed upstream) -
+producing hashes that passlib then can't verify against, with a
+confusing "hash could not be identified" error. Calling bcrypt
+directly sidesteps that entirely and is simpler besides.
 """
 from datetime import datetime, timedelta, timezone
-import hashlib
-import secrets
+import bcrypt
 from jose import jwt, JWTError
 
 from app.core.config import settings
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
-    return f"pbkdf2_sha256$200000$" + salt.hex() + "$" + digest.hex()
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    if not hashed.startswith("pbkdf2_sha256$"):
-        return False
-    try:
-        _, iterations, salt_hex, digest_hex = hashed.split("$", 3)
-        iterations = int(iterations)
-        salt = bytes.fromhex(salt_hex)
-        expected = bytes.fromhex(digest_hex)
-        actual = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt, iterations)
-        return secrets.compare_digest(actual, expected)
-    except ValueError:
-        return False
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
 def create_access_token(subject: str, role: str) -> str:

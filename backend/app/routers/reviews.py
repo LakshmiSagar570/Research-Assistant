@@ -6,7 +6,7 @@ from the SRS User Roles section.
 """
 import json
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -16,7 +16,7 @@ from app.models.orm import User, Paper, Review, UserRole
 from app.models.schemas import ReviewGenerateRequest, ReviewOut
 from app.services.gap_detection import detect_gaps
 from app.services.review_generator import generate_review_markdown
-from app.services.review_export import markdown_to_docx
+from app.services.review_export import markdown_to_docx_bytes
 from app.services.summarizer import extractive_summary
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
@@ -35,7 +35,6 @@ async def generate_review(
     if not papers:
         raise HTTPException(status_code=404, detail="No matching papers found")
 
-    # Ensure every paper has a cached summary before synthesis
     changed = False
     for p in papers:
         if not p.summary:
@@ -88,42 +87,34 @@ async def list_reviews(
     return result.scalars().all()
 
 
-@router.post("/{review_id}/export", response_model=ReviewOut)
-async def export_review(
-    review_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """FR8: renders the review's Markdown into a downloadable .docx file."""
-    result = await db.execute(select(Review).where(Review.id == review_id))
-    review = result.scalar_one_or_none()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
-
-    export_path = markdown_to_docx(review.content_markdown, review.id)
-    review.export_path = export_path
-    await db.commit()
-    await db.refresh(review)
-    return review
-
-
 @router.get("/{review_id}/download")
 async def download_review(
     review_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """FR8: serves the exported .docx file."""
+    """
+    FR8: renders the review's Markdown into a .docx and streams it back
+    in this same request. Also marks the review as exported. Combining
+    generation and download into one request avoids relying on a file
+    written to disk in an earlier request being readable later - see
+    services/review_export.py for why that matters on serverless hosts.
+    """
     result = await db.execute(select(Review).where(Review.id == review_id))
     review = result.scalar_one_or_none()
-    if not review or not review.export_path:
-        raise HTTPException(status_code=404, detail="Export not found. Call /export first.")
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    docx_bytes = markdown_to_docx_bytes(review.content_markdown)
+
+    review.export_path = "generated"  # marker only; the file itself is not persisted server-side
+    await db.commit()
 
     filename = f"{review.title.replace(' ', '_')}.docx"
-    return FileResponse(
-        review.export_path,
+    return Response(
+        content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -141,6 +132,11 @@ async def approve_review(
     review = result.scalar_one_or_none()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
+
+    review.status = "approved"
+    await db.commit()
+    await db.refresh(review)
+    return review
 
     review.status = "approved"
     await db.commit()

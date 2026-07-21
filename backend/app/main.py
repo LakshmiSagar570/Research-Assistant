@@ -1,27 +1,36 @@
 """
 AI Research Assistant - FastAPI application entry point.
 
-Run with:
+Local dev:
     uvicorn app.main:app --reload --port 8000
+    -> creates SQLite tables and seeds demo@college.edu / demo1234
 
-On startup this creates all tables (SQLite, zero-setup) and seeds a
-single demo user so the app can be demoed immediately:
-    email:    demo@college.edu
-    password: demo1234
+Production (ENV=production):
+    -> connects to DATABASE_URL (Supabase Postgres), does NOT seed the
+       demo account, enforces a real JWT_SECRET, and applies rate
+       limiting + security headers.
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.database import init_db, AsyncSessionLocal
 from app.core.security import hash_password
+from app.core.limiter import limiter
 from app.models.orm import User, UserRole
 from app.routers import auth, papers, references, gaps, reviews
 
 
 async def _seed_demo_user():
+    """Only ever runs when SEED_DEMO_USER=true (local/dev default). In
+    production this is disabled so no publicly-documented credential
+    exists on the live deployment - see core/config.py."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.email == "demo@college.edu"))
         if result.scalar_one_or_none():
@@ -39,7 +48,8 @@ async def _seed_demo_user():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await _seed_demo_user()
+    if settings.SEED_DEMO_USER and not settings.is_production:
+        await _seed_demo_user()
     yield
 
 
@@ -48,16 +58,38 @@ app = FastAPI(
     description="Literature search, summarization, gap detection, and automated review generation.",
     version="2.0.0",
     lifespan=lifespan,
+    # Hide interactive API docs in production - they're a convenience for
+    # grading/dev, not something a public deployment should expose.
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=settings.CORS_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Baseline security headers. Not a substitute for HTTPS termination
+    (Vercel provides that at the edge) but closes off common client-side
+    injection/sniffing vectors."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
 
 app.include_router(auth.router)
 app.include_router(papers.router)
@@ -68,12 +100,14 @@ app.include_router(reviews.router)
 
 @app.get("/")
 async def root():
-    return {
+    payload = {
         "app": settings.APP_NAME,
         "status": "running",
-        "docs": "/docs",
-        "demo_login": {"email": "demo@college.edu", "password": "demo1234"},
+        "docs": "/docs" if not settings.is_production else None,
     }
+    if not settings.is_production:
+        payload["demo_login"] = {"email": "demo@college.edu", "password": "demo1234"}
+    return payload
 
 
 @app.get("/health")

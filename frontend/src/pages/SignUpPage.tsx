@@ -3,24 +3,36 @@ import { useNavigate, Link } from "react-router-dom";
 import { FileSearch, ArrowRight } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { Button } from "../components/ui";
+import { register, type UserRole } from "../api/client";
 
-export default function LoginPage() {
+export default function SignUpPage() {
   const { signIn } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState(import.meta.env.DEV ? "demo@college.edu" : "");
-  const [password, setPassword] = useState(import.meta.env.DEV ? "demo1234" : "");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<UserRole>("student");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+
     setLoading(true);
     try {
+      await register(name, email, password, role);
+      // Registration succeeded - log the user straight in rather than
+      // making them re-type credentials on a separate screen.
       await signIn(email, password);
       navigate("/");
-    } catch {
-      setError("Incorrect email or password.");
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not create account. Try again.");
     } finally {
       setLoading(false);
     }
@@ -67,12 +79,23 @@ export default function LoginPage() {
             boxShadow: "var(--shadow-raised)",
           }}
         >
-          <h1 style={{ fontSize: 20, marginBottom: 4 }}>Sign in</h1>
+          <h1 style={{ fontSize: 20, marginBottom: 4 }}>Create account</h1>
           <p style={{ fontSize: 13, color: "var(--ink-soft)", margin: "0 0 24px" }}>
-            For faculty and postgraduate research access.
+            Register for faculty or student research access.
           </p>
 
           <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Full name</span>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                minLength={2}
+                placeholder="Your name"
+              />
+            </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Email</span>
               <input
@@ -90,8 +113,16 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                placeholder="••••••••"
+                minLength={6}
+                placeholder="At least 6 characters"
               />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Role</span>
+              <select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
+                <option value="student">Student</option>
+                <option value="faculty">Faculty</option>
+              </select>
             </label>
 
             {error && (
@@ -101,21 +132,16 @@ export default function LoginPage() {
             )}
 
             <Button type="submit" disabled={loading} style={{ marginTop: 6, justifyContent: "center" }}>
-              {loading ? "Signing in…" : "Sign in"}
+              {loading ? "Creating account…" : "Create account"}
               {!loading && <ArrowRight size={14} />}
             </Button>
           </form>
         </div>
 
-        {import.meta.env.DEV && (
-          <p style={{ textAlign: "center", fontSize: 12, color: "var(--ink-faint)", marginTop: 18, fontFamily: "var(--mono)" }}>
-            demo account — demo@college.edu / demo1234
-          </p>
-        )}
-        <p style={{ textAlign: "center", fontSize: 13, color: "var(--ink-soft)", marginTop: 10 }}>
-          New here?{" "}
-          <Link to="/signup" style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}>
-            Create an account
+        <p style={{ textAlign: "center", fontSize: 13, color: "var(--ink-soft)", marginTop: 18 }}>
+          Already have an account?{" "}
+          <Link to="/login" style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}>
+            Sign in
           </Link>
         </p>
       </div>

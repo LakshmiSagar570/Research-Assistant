@@ -32,7 +32,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), default=UserRole.student)
+    role: Mapped[UserRole] = mapped_column(
+        SAEnum(UserRole, native_enum=False, length=20), default=UserRole.student
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     references: Mapped[list["Reference"]] = relationship(back_populates="owner", cascade="all, delete-orphan")

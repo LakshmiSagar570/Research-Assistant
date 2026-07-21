@@ -149,13 +149,14 @@ export async function listReviews() {
   return data;
 }
 
-export async function exportReview(reviewId: string) {
-  const { data } = await api.post<Review>(`/reviews/${reviewId}/export`);
-  return data;
-}
-
-export function downloadReviewUrl(reviewId: string) {
-  return `${API_BASE}/reviews/${reviewId}/download`;
+export async function downloadReview(reviewId: string, filename: string) {
+  const response = await api.get(`/reviews/${reviewId}/download`, { responseType: "blob" });
+  const url = URL.createObjectURL(new Blob([response.data]));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${filename.replace(/\s+/g, "_")}.docx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function approveReview(reviewId: string) {

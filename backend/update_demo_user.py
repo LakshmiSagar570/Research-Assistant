@@ -20,6 +20,4 @@ async def main() -> None:
             print('updated demo user password hash')
         else:
             print('demo user not found')
-
-
 asyncio.run(main())
