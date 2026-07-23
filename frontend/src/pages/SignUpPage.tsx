@@ -12,6 +12,8 @@ export default function SignUpPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("student");
+  const [college, setCollege] = useState("");
+  const [department, setDepartment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -26,7 +28,7 @@ export default function SignUpPage() {
 
     setLoading(true);
     try {
-      await register(name, email, password, role);
+      await register(name, email, password, role, college.trim(), department.trim());
       // Registration succeeded - log the user straight in rather than
       // making them re-type credentials on a separate screen.
       await signIn(email, password);
@@ -50,8 +52,8 @@ export default function SignUpPage() {
         zIndex: 1,
       }}
     >
-      <div style={{ width: "100%", maxWidth: 380, animation: "fadeInUp 0.4s ease" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 32, justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 420, animation: "fadeInUp 0.4s ease" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28, justifyContent: "center" }}>
           <div
             style={{
               width: 34,
@@ -75,12 +77,12 @@ export default function SignUpPage() {
             background: "var(--paper-raised)",
             border: "1px solid var(--rule)",
             borderRadius: 6,
-            padding: "32px 28px",
+            padding: "28px 24px",
             boxShadow: "var(--shadow-raised)",
           }}
         >
           <h1 style={{ fontSize: 20, marginBottom: 4 }}>Create account</h1>
-          <p style={{ fontSize: 13, color: "var(--ink-soft)", margin: "0 0 24px" }}>
+          <p style={{ fontSize: 13, color: "var(--ink-soft)", margin: "0 0 20px" }}>
             Register for faculty or student research access.
           </p>
 
@@ -93,7 +95,7 @@ export default function SignUpPage() {
                 onChange={(e) => setName(e.target.value)}
                 required
                 minLength={2}
-                placeholder="Your name"
+                placeholder="Your full name"
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -106,6 +108,28 @@ export default function SignUpPage() {
                 placeholder="you@college.edu"
               />
             </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>College / Institution</span>
+                <input
+                  type="text"
+                  value={college}
+                  onChange={(e) => setCollege(e.target.value)}
+                  placeholder="e.g., MIT / Oxford"
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Department</span>
+                <input
+                  type="text"
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  placeholder="e.g., CSE / Data Science"
+                />
+              </label>
+            </div>
+
             <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Password</span>
               <input
@@ -117,6 +141,7 @@ export default function SignUpPage() {
                 placeholder="At least 6 characters"
               />
             </label>
+
             <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-soft)" }}>Role</span>
               <select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>

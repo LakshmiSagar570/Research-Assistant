@@ -19,6 +19,8 @@ export interface User {
   name: string;
   email: string;
   role: UserRole;
+  college?: string;
+  department?: string;
   created_at: string;
 }
 
@@ -80,8 +82,22 @@ export async function login(email: string, password: string) {
   return data;
 }
 
-export async function register(name: string, email: string, password: string, role: UserRole) {
-  const { data } = await api.post<User>("/auth/register", { name, email, password, role });
+export async function register(
+  name: string,
+  email: string,
+  password: string,
+  role: UserRole,
+  college = "",
+  department = ""
+) {
+  const { data } = await api.post<User>("/auth/register", {
+    name,
+    email,
+    password,
+    role,
+    college,
+    department,
+  });
   return data;
 }
 
@@ -170,6 +186,8 @@ export interface StudentUser {
   id: string;
   name: string;
   email: string;
+  college?: string;
+  department?: string;
 }
 
 export interface ResearchProject {

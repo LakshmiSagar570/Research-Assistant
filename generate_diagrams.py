@@ -63,29 +63,20 @@ def draw_box(ax, x, y, w, h, title, subtitle=None, fill="#EBF3FA", edge="#1B65A6
 
 
 def draw_arrow(ax, start, end, label=None, label_pos=None, dashed=False, color="#333333",
-               connectionstyle="arc3,rad=0", has_head=True, fontsize=8.5):
-    """Draws explicit data-coordinate arrow/line with white-background label card."""
+               has_head=True, arrowstyle="->,head_width=0.35,head_length=0.5", fontsize=8.5):
+    """Draws explicit straight data-coordinate arrow/line with white-background label card."""
     linestyle = "dashed" if dashed else "solid"
     
     if has_head:
         arrowprops = dict(
-            arrowstyle="->,head_width=0.35,head_length=0.5",
-            linewidth=1.2, color=color, linestyle=linestyle,
-            connectionstyle=connectionstyle
+            arrowstyle=arrowstyle,
+            linewidth=1.2, color=color, linestyle=linestyle
         )
         ax.annotate("", xy=end, xytext=start, xycoords="data", textcoords="data",
                     arrowprops=arrowprops, zorder=3)
     else:
-        if connectionstyle == "arc3,rad=0" or not connectionstyle:
-            ax.plot([start[0], end[0]], [start[1], end[1]], color=color,
-                    linewidth=1.2, linestyle=linestyle, zorder=3)
-        else:
-            arrowprops = dict(
-                arrowstyle="-", linewidth=1.2, color=color, linestyle=linestyle,
-                connectionstyle=connectionstyle
-            )
-            ax.annotate("", xy=end, xytext=start, xycoords="data", textcoords="data",
-                        arrowprops=arrowprops, zorder=3)
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=color,
+                linewidth=1.2, linestyle=linestyle, zorder=3)
 
     if label:
         lx, ly = label_pos if label_pos else ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
@@ -185,7 +176,7 @@ def draw_er():
     draw_arrow(ax, (540, 400), (600, 400), label="1 : 1  (generates)")
     draw_arrow(ax, (150, 330), (220, 220), label="1 : N  (writes)")
     draw_arrow(ax, (340, 220), (430, 320), label="N : M  (references)", dashed=True)
-    draw_arrow(ax, (150, 330), (520, 140), label="1 : N  (leads & pulls students)", connectionstyle="arc3,rad=-0.15")
+    draw_arrow(ax, (150, 330), (520, 140), label="1 : N  (leads & pulls students)")
 
     save(fig, "fig4_2_er_diagram.png")
 
@@ -207,7 +198,7 @@ def draw_dfd_level0():
             fontsize=13, fontweight="bold", color=COLORS["purple_text"], zorder=3)
 
     # External Entities
-    draw_box(ax, 40, 175, 160, 70, "User", "Student / Faculty / Admin",
+    draw_box(ax, 40, 175, 160, 70, "User", "Student / Faculty",
              COLORS["gray_fill"], COLORS["gray_edge"], COLORS["gray_text"], COLORS["gray_text"],
              fontsize=12, sub_fontsize=8.5)
 
@@ -289,10 +280,10 @@ def draw_dfd_level1():
 
 
 # ---------------------------------------------------------------------------
-# Fig 4.5 - UML Use Case Diagram
+# Fig 4.5 - Pristine Publication-Grade UML Use Case Diagram
 # ---------------------------------------------------------------------------
 def stick_actor(ax, x, y, label, scale=1.0):
-    """Draws stick actor figure."""
+    """Draws stick actor figure with label positioned neatly below legs."""
     head_r = 14 * scale
     ax.add_patch(Circle((x, y), head_r, facecolor="white", edgecolor=COLORS["gray_text"], linewidth=1.6, zorder=3))
     body_top = y - head_r
@@ -303,7 +294,7 @@ def stick_actor(ax, x, y, label, scale=1.0):
     ax.plot([x, x - 18 * scale], [body_bottom, body_bottom - 32 * scale], color=COLORS["gray_text"], linewidth=1.6, zorder=3)
     ax.plot([x, x + 18 * scale], [body_bottom, body_bottom - 32 * scale], color=COLORS["gray_text"], linewidth=1.6, zorder=3)
     ax.text(x, body_bottom - 46 * scale, label, ha="center", va="center",
-            fontsize=11, fontweight="bold", color=COLORS["gray_text"], zorder=3)
+            fontsize=12, fontweight="bold", color=COLORS["gray_text"], zorder=3)
 
 
 def use_case_ellipse(ax, cx, cy, rx, ry, label, fill, edge, tcolor, fontsize=9.5):
@@ -312,66 +303,53 @@ def use_case_ellipse(ax, cx, cy, rx, ry, label, fill, edge, tcolor, fontsize=9.5
 
 
 def draw_uml_usecase():
-    W, H = 900, 600
+    W, H = 960, 640
     fig, ax = new_figure(W, H)
 
-    # System boundary
-    boundary = FancyBboxPatch((190, 30), 520, 540, boxstyle="round,pad=0,rounding_size=8",
+    # System boundary box with title centered outside top margin
+    boundary = FancyBboxPatch((200, 30), 560, 560, boxstyle="round,pad=0,rounding_size=8",
                                linewidth=1.3, edgecolor=COLORS["gray_edge"], facecolor="none",
                                linestyle="dashed", zorder=1)
     ax.add_patch(boundary)
-    ax.text(450, 545, "AI Research Assistant System", ha="center", va="center",
-            fontsize=13, fontweight="bold", color=COLORS["gray_text"], zorder=3)
+    ax.text(480, 565, "AI Research Assistant System", ha="center", va="center",
+            fontsize=14, fontweight="bold", color=COLORS["gray_text"], zorder=3)
 
-    # Actors
-    stick_actor(ax, 80, 450, "Student")
-    stick_actor(ax, 80, 170, "Faculty")
-    stick_actor(ax, 820, 310, "Admin")
+    # Actors: Student on Left, Faculty on Right
+    stick_actor(ax, 85, 310, "Student")
+    stick_actor(ax, 875, 180, "Faculty")
 
-    # Use Cases
-    # Left Column (x=350)
-    uc_login      = (350, 500, 85, 22, "Register / Login", COLORS["blue_fill"], COLORS["blue_edge"], COLORS["blue_text"])
-    uc_search     = (350, 420, 85, 22, "Search Papers", COLORS["purple_fill"], COLORS["purple_edge"], COLORS["purple_text"])
-    uc_summarize  = (350, 340, 85, 22, "Summarize & Cite", COLORS["teal_fill"], COLORS["teal_edge"], COLORS["teal_text"])
-    uc_manage_ref = (350, 260, 85, 22, "Manage References", COLORS["teal_fill"], COLORS["teal_edge"], COLORS["teal_text"])
-    uc_review     = (350, 180, 85, 22, "Generate Review & Gaps", COLORS["coral_fill"], COLORS["coral_edge"], COLORS["coral_text"])
-    uc_export     = (350, 100, 85, 22, "Export DOCX", COLORS["pink_fill"], COLORS["pink_edge"], COLORS["pink_text"])
+    # Left Column Use Cases (x=350) - Student workflow
+    uc_login      = (350, 520, 85, 22, "Register / Login", COLORS["blue_fill"], COLORS["blue_edge"], COLORS["blue_text"])
+    uc_search     = (350, 440, 85, 22, "Search Papers", COLORS["purple_fill"], COLORS["purple_edge"], COLORS["purple_text"])
+    uc_summarize  = (350, 360, 85, 22, "Summarize & Cite", COLORS["teal_fill"], COLORS["teal_edge"], COLORS["teal_text"])
+    uc_manage_ref = (350, 280, 85, 22, "Manage References", COLORS["teal_fill"], COLORS["teal_edge"], COLORS["teal_text"])
+    uc_review     = (350, 200, 95, 22, "Generate Review & Gaps", COLORS["coral_fill"], COLORS["coral_edge"], COLORS["coral_text"])
+    uc_export     = (350, 110, 85, 22, "Export DOCX", COLORS["pink_fill"], COLORS["pink_edge"], COLORS["pink_text"])
 
-    # Right Column (x=580)
-    uc_admin      = (580, 420, 85, 22, "Manage Users & Roles", COLORS["gray_fill"], COLORS["gray_edge"], COLORS["gray_text"])
-    uc_approve    = (580, 260, 85, 22, "Approve Review", COLORS["coral_fill"], COLORS["coral_edge"], COLORS["coral_text"])
-    uc_pull       = (580, 110, 95, 22, "Pull Students to Research", COLORS["blue_fill"], COLORS["blue_edge"], COLORS["blue_text"])
+    # Right Column Use Cases (x=630) - Faculty features
+    uc_approve    = (630, 200, 85, 22, "Approve Review", COLORS["coral_fill"], COLORS["coral_edge"], COLORS["coral_text"])
+    uc_pull       = (630, 110, 95, 22, "Pull Students to Research", COLORS["blue_fill"], COLORS["blue_edge"], COLORS["blue_text"])
 
-    all_usecases = [uc_login, uc_search, uc_summarize, uc_manage_ref, uc_review, uc_export, uc_admin, uc_approve, uc_pull]
+    all_usecases = [uc_login, uc_search, uc_summarize, uc_manage_ref, uc_review, uc_export, uc_approve, uc_pull]
     for uc in all_usecases:
         use_case_ellipse(ax, *uc)
 
-    # Solid Association Lines (Student at 80, 410 body center)
-    draw_arrow(ax, (80, 410), (265, 500), has_head=False)
-    draw_arrow(ax, (80, 410), (265, 420), has_head=False)
-    draw_arrow(ax, (80, 410), (265, 340), has_head=False)
-    draw_arrow(ax, (80, 410), (265, 260), has_head=False)
-    draw_arrow(ax, (80, 410), (265, 180), has_head=False)
-    draw_arrow(ax, (80, 410), (265, 100), has_head=False)
+    # Student Associations (origin from Student center torso (85, 310) -> left perimeters)
+    draw_arrow(ax, (85, 310), (265, 520), has_head=False)  # Register / Login
+    draw_arrow(ax, (85, 310), (265, 440), has_head=False)  # Search Papers
+    draw_arrow(ax, (85, 310), (265, 360), has_head=False)  # Summarize & Cite
+    draw_arrow(ax, (85, 310), (265, 280), has_head=False)  # Manage References
+    draw_arrow(ax, (85, 310), (255, 200), has_head=False)  # Generate Review & Gaps
+    draw_arrow(ax, (85, 310), (265, 110), has_head=False)  # Export DOCX
 
-    # Solid Association Lines (Faculty at 80, 130 body center)
-    draw_arrow(ax, (80, 130), (265, 420), has_head=False)
-    draw_arrow(ax, (80, 130), (265, 340), has_head=False)
-    draw_arrow(ax, (80, 130), (265, 260), has_head=False)
-    draw_arrow(ax, (80, 130), (265, 180), has_head=False)
-    draw_arrow(ax, (80, 130), (265, 100), has_head=False)
-    draw_arrow(ax, (80, 130), (495, 260), has_head=False)
-    draw_arrow(ax, (80, 130), (485, 110), has_head=False)
+    # Faculty Associations (origin from Faculty center torso (875, 180) -> right perimeters)
+    draw_arrow(ax, (875, 180), (725, 110), has_head=False)  # Pull Students to Research
+    draw_arrow(ax, (875, 180), (715, 200), has_head=False)  # Approve Review
+    draw_arrow(ax, (875, 180), (435, 440), has_head=False)  # Search Papers (Passes 131px above Approve Review)
 
-    # Solid Association Lines (Admin at 820, 270 body center)
-    draw_arrow(ax, (820, 270), (435, 500), has_head=False, connectionstyle="arc3,rad=-0.22")
-    draw_arrow(ax, (820, 270), (665, 420), has_head=False)
-    draw_arrow(ax, (820, 270), (665, 260), has_head=False)
-    draw_arrow(ax, (820, 270), (675, 110), has_head=False)
-
-    # Dashed Includes
-    draw_arrow(ax, (350, 158), (350, 122), label="<<include>>", dashed=True)
-    draw_arrow(ax, (420, 190), (495, 245), label="<<include>>", dashed=True)
+    # Dashed Includes (Clean straight arrows with non-overlapping label cards)
+    draw_arrow(ax, (445, 200), (545, 200), label="<<include>>", dashed=True)  # Review -> Approve (100% Horizontal!)
+    draw_arrow(ax, (350, 178), (350, 132), label="<<include>>", dashed=True)  # Review -> Export DOCX (100% Vertical!)
 
     save(fig, "fig4_5_uml_usecase.png")
 

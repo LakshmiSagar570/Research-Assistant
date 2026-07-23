@@ -15,6 +15,8 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     role: UserRole = UserRole.student
+    college: str = Field(default="", max_length=255)
+    department: str = Field(default="", max_length=255)
 
 
 class UserOut(BaseModel):
@@ -22,6 +24,8 @@ class UserOut(BaseModel):
     name: str
     email: EmailStr
     role: UserRole
+    college: str = ""
+    department: str = ""
     created_at: datetime
 
     class Config:
@@ -146,6 +150,8 @@ class StudentOut(BaseModel):
     id: str
     name: str
     email: EmailStr
+    college: str = ""
+    department: str = ""
 
     class Config:
         from_attributes = True

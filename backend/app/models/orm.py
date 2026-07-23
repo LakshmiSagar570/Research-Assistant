@@ -35,6 +35,8 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(
         SAEnum(UserRole, native_enum=False, length=20), default=UserRole.student
     )
+    college: Mapped[str] = mapped_column(String(255), default="")
+    department: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     references: Mapped[list["Reference"]] = relationship(back_populates="owner", cascade="all, delete-orphan")

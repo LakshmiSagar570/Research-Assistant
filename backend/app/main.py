@@ -39,6 +39,8 @@ async def _seed_demo_user():
                 email="demo@college.edu",
                 password_hash=hash_password("demo1234"),
                 role=UserRole.faculty,
+                college="School of Computing",
+                department="Computer Science & Engineering",
             )
             db.add(demo_user)
 
@@ -49,6 +51,8 @@ async def _seed_demo_user():
                 email="student@college.edu",
                 password_hash=hash_password("student1234"),
                 role=UserRole.student,
+                college="School of Computing",
+                department="Computer Science & Engineering",
             )
             db.add(student_user)
 

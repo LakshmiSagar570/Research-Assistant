@@ -90,7 +90,13 @@ async def list_projects(
     out = []
     for p in projects:
         members_out = [
-            StudentOut(id=m.student.id, name=m.student.name, email=m.student.email)
+            StudentOut(
+                id=m.student.id,
+                name=m.student.name,
+                email=m.student.email,
+                college=getattr(m.student, "college", "") or "",
+                department=getattr(m.student, "department", "") or "",
+            )
             for m in p.members
             if m.student
         ]
@@ -115,10 +121,21 @@ async def list_available_students(
 ):
     """Faculty/Admin only: list registered students available to be pulled into research."""
     result = await db.execute(
-        select(User).where(User.role == UserRole.student).order_by(User.name)
+        select(User).where(
+            (User.role == UserRole.student) | (User.role == "student") | (User.role == "STUDENT")
+        ).order_by(User.name)
     )
     students = result.scalars().all()
-    return [StudentOut(id=s.id, name=s.name, email=s.email) for s in students]
+    return [
+        StudentOut(
+            id=s.id,
+            name=s.name,
+            email=s.email,
+            college=getattr(s, "college", "") or "",
+            department=getattr(s, "department", "") or "",
+        )
+        for s in students
+    ]
 
 
 @router.post("/{project_id}/students", response_model=ResearchProjectOut)
@@ -173,7 +190,13 @@ async def add_student_to_project(
     project = result.scalar_one_or_none()
 
     members_out = [
-        StudentOut(id=m.student.id, name=m.student.name, email=m.student.email)
+        StudentOut(
+            id=m.student.id,
+            name=m.student.name,
+            email=m.student.email,
+            college=getattr(m.student, "college", "") or "",
+            department=getattr(m.student, "department", "") or "",
+        )
         for m in project.members
         if m.student
     ]

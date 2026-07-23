@@ -99,6 +99,9 @@ async def get_db():
         yield session
 
 
+from sqlalchemy import text
+
+
 # ------------------------------------------------------------------
 # Initialize Database
 # ------------------------------------------------------------------
@@ -106,3 +109,11 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN college VARCHAR(255) DEFAULT ''"))
+        except Exception:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN department VARCHAR(255) DEFAULT ''"))
+        except Exception:
+            pass

@@ -238,8 +238,13 @@ export default function ProjectsPage() {
                             color: "var(--ink)",
                           }}
                         >
-                          <span>{member.name}</span>
+                          <span><strong>{member.name}</strong></span>
                           <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>({member.email})</span>
+                          {(member.college || member.department) && (
+                            <span style={{ fontSize: 10.5, padding: "2px 6px", borderRadius: 4, background: "var(--paper-raised)", border: "1px solid var(--rule-strong)", color: "var(--accent)" }}>
+                              {[member.college, member.department].filter(Boolean).join(" · ")}
+                            </span>
+                          )}
                           {isFaculty && (
                             <button
                               onClick={() => handleRemoveStudent(project.id, member.id)}
@@ -289,7 +294,7 @@ export default function ProjectsPage() {
                           border: "1px solid var(--rule-strong)",
                           background: "var(--paper-raised)",
                           color: "var(--ink)",
-                          minWidth: 220,
+                          minWidth: 260,
                         }}
                       >
                         <option value="">-- Select Student to Pull --</option>
@@ -297,7 +302,7 @@ export default function ProjectsPage() {
                           .filter((s) => !project.members.some((m) => m.id === s.id))
                           .map((student) => (
                             <option key={student.id} value={student.email}>
-                              {student.name} ({student.email})
+                              {student.name} ({student.email}) {student.college || student.department ? `[${[student.college, student.department].filter(Boolean).join(" - ")}]` : ""}
                             </option>
                           ))}
                       </select>
