@@ -163,3 +163,47 @@ export async function approveReview(reviewId: string) {
   const { data } = await api.post<Review>(`/reviews/${reviewId}/approve`);
   return data;
 }
+
+// ---------- Projects ----------
+
+export interface StudentUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface ResearchProject {
+  id: string;
+  title: string;
+  description: string;
+  faculty_id: string;
+  faculty_name: string;
+  created_at: string;
+  members: StudentUser[];
+}
+
+export async function listProjects() {
+  const { data } = await api.get<ResearchProject[]>("/projects");
+  return data;
+}
+
+export async function createProject(title: string, description: string) {
+  const { data } = await api.post<ResearchProject>("/projects", { title, description });
+  return data;
+}
+
+export async function listAvailableStudents() {
+  const { data } = await api.get<StudentUser[]>("/projects/students");
+  return data;
+}
+
+export async function addStudentToProject(projectId: string, studentEmail: string) {
+  const { data } = await api.post<ResearchProject>(`/projects/${projectId}/students`, {
+    student_email: studentEmail,
+  });
+  return data;
+}
+
+export async function removeStudentFromProject(projectId: string, studentId: string) {
+  await api.delete(`/projects/${projectId}/students/${studentId}`);
+}

@@ -1,10 +1,11 @@
 import { type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { Search, BookMarked, FileText, LayoutGrid, LogOut, FileSearch } from "lucide-react";
+import { Search, BookMarked, FileText, LayoutGrid, LogOut, FileSearch, FolderGit2 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, end: true },
+  { to: "/projects", label: "Research Projects", icon: FolderGit2 },
   { to: "/search", label: "Search", icon: Search },
   { to: "/references", label: "References", icon: BookMarked },
   { to: "/reviews", label: "Reviews", icon: FileText },

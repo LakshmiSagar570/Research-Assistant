@@ -24,7 +24,7 @@ from app.core.database import init_db, AsyncSessionLocal
 from app.core.security import hash_password
 from app.core.limiter import limiter
 from app.models.orm import User, UserRole
-from app.routers import auth, papers, references, gaps, reviews
+from app.routers import auth, papers, references, gaps, reviews, projects
 
 
 async def _seed_demo_user():
@@ -33,15 +33,25 @@ async def _seed_demo_user():
     exists on the live deployment - see core/config.py."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.email == "demo@college.edu"))
-        if result.scalar_one_or_none():
-            return
-        demo_user = User(
-            name="Demo Faculty",
-            email="demo@college.edu",
-            password_hash=hash_password("demo1234"),
-            role=UserRole.faculty,
-        )
-        db.add(demo_user)
+        if not result.scalar_one_or_none():
+            demo_user = User(
+                name="Demo Faculty",
+                email="demo@college.edu",
+                password_hash=hash_password("demo1234"),
+                role=UserRole.faculty,
+            )
+            db.add(demo_user)
+
+        s_result = await db.execute(select(User).where(User.email == "student@college.edu"))
+        if not s_result.scalar_one_or_none():
+            student_user = User(
+                name="Alex Student",
+                email="student@college.edu",
+                password_hash=hash_password("student1234"),
+                role=UserRole.student,
+            )
+            db.add(student_user)
+
         await db.commit()
 
 
@@ -96,6 +106,7 @@ app.include_router(papers.router)
 app.include_router(references.router)
 app.include_router(gaps.router)
 app.include_router(reviews.router)
+app.include_router(projects.router)
 
 
 @app.get("/")

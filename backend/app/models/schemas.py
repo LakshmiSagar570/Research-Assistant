@@ -129,3 +129,36 @@ class ReviewOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------- Research Projects ----------
+
+class ResearchProjectCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    description: str = Field(default="", max_length=2000)
+
+
+class AddStudentRequest(BaseModel):
+    student_email: EmailStr
+
+
+class StudentOut(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+
+    class Config:
+        from_attributes = True
+
+
+class ResearchProjectOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    faculty_id: str
+    faculty_name: str
+    created_at: datetime
+    members: list[StudentOut] = []
+
+    class Config:
+        from_attributes = True

@@ -39,6 +39,8 @@ class User(Base):
 
     references: Mapped[list["Reference"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
     reviews: Mapped[list["Review"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+    projects_led: Mapped[list["ResearchProject"]] = relationship(back_populates="faculty", cascade="all, delete-orphan", foreign_keys="[ResearchProject.faculty_id]")
+    memberships: Mapped[list["ResearchMember"]] = relationship(back_populates="student", cascade="all, delete-orphan", foreign_keys="[ResearchMember.student_id]")
 
 
 class Paper(Base):
@@ -85,3 +87,28 @@ class Review(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     owner: Mapped["User"] = relationship(back_populates="reviews")
+
+
+class ResearchProject(Base):
+    __tablename__ = "research_projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    faculty_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    faculty: Mapped["User"] = relationship(back_populates="projects_led", foreign_keys=[faculty_id])
+    members: Mapped[list["ResearchMember"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class ResearchMember(Base):
+    __tablename__ = "research_members"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("research_projects.id"))
+    student_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    project: Mapped["ResearchProject"] = relationship(back_populates="members")
+    student: Mapped["User"] = relationship(back_populates="memberships", foreign_keys=[student_id])
